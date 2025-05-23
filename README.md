@@ -54,6 +54,7 @@ Add Key to app.py: Put your key in app.py where it says TMDb_API_KEY = "YOUR_API
 Bypass Posters: If you still have issues, set BYPASS_POSTER_FETCHING = True in app.py. This will show placeholder images instead of trying to fetch real posters.
 
 📂 Project Structure
+
 .
 ├── app.py                      # The main Streamlit web application
 ├── movie_recommendation.ipynb  # (Optional) Jupyter Notebook for data preparation
