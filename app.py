@@ -1,122 +1,107 @@
-import streamlit as st
 import pickle
+import streamlit as st
+import requests
 import pandas as pd
-import requests # Make sure 'requests' is imported
+import time
 
-# --- CONFIGURATION ---
-# Set this to True to bypass fetching posters from TMDb.
-# This is recommended if you are consistently getting connection errors.
-# When True, it will always show a placeholder image instead of trying to fetch from TMDb.
-BYPASS_POSTER_FETCHING = False# <--- SET TO TRUE TO BYPASS POSTER API CALLS
+# Configuration
+API_KEY = "5130b00ad14fd07408a66ad29d21f8ae"
+MOVIE_LIST_PATH = 'model/movie_list.pkl'
+SIMILARITY_PATH = 'model/similarity.pkl'
 
-# IMPORTANT: Replace 'YOUR_API_KEY' with your actual TMDb API key
-# This key is only used if BYPASS_POSTER_FETCHING is False.
-TMDb_API_KEY = "5130b00ad14fd07408a66ad29d21f8ae" # <--- REPLACE THIS WITH YOUR ACTUAL API KEY (only if BYPASS_POSTER_FETCHING is False)
+# Function to fetch movie poster with retries (no visible errors)
+def fetch_poster(movie_id, max_retries=3):
+    url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={API_KEY}&language=en-US"
 
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                poster_path = data.get("poster_path")
+                if poster_path:
+                    return "https://image.tmdb.org/t/p/w500" + poster_path
+                else:
+                    return "https://via.placeholder.com/500x750?text=No+Image"
+            elif response.status_code == 429:
+                # Rate limit hit, wait before retrying
+                time.sleep(2)
+            else:
+                break
+        except (requests.ConnectionError, requests.Timeout, Exception):
+            # Silently catch all network issues
+            time.sleep(1)
 
-# Function to fetch movie poster
-def fetch_poster(movie_id):
-    if BYPASS_POSTER_FETCHING:
-        # If bypassing, return a generic placeholder image
-        return f"https://placehold.co/200x300/E0E0E0/333333?text=No+Poster"
-
-    # If not bypassing, attempt to fetch from TMDb
-    url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDb_API_KEY}&language=en-US"
-
-    try:
-        response = requests.get(url, timeout=10) # Added a timeout
-        response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
-        data = response.json()
-        poster_path = data.get('poster_path') # Use .get() to avoid KeyError if path is missing
-        if poster_path:
-            full_path = "https://image.tmdb.org/t/p/w500/" + poster_path
-            return full_path
-        else:
-            # Fallback if poster_path is null or empty
-            return "https://placehold.co/200x300/E0E0E0/333333?text=No+Poster"
-    except requests.exceptions.HTTPError as http_err:
-        st.error(f"HTTP error occurred while fetching poster: {http_err} (Status Code: {response.status_code}). Check API key or URL.")
-        return "https://placehold.co/200x300/E0E0E0/333333?text=Error"
-    except requests.exceptions.ConnectionError as conn_err:
-        st.error(f"Connection error occurred while fetching poster: {conn_err}. Check your internet connection or API key.")
-        return "https://placehold.co/200x300/E0E0E0/333333?text=No+Connection"
-    except requests.exceptions.Timeout as timeout_err:
-        st.error(f"Timeout error occurred while fetching poster: {timeout_err}")
-        return "https://placehold.co/200x300/E0E0E0/333333?text=Timeout"
-    except requests.exceptions.RequestException as req_err:
-        st.error(f"An unexpected error occurred while fetching poster: {req_err}")
-        return "https://placehold.co/200x300/E0E0E0/333333?text=Error"
-    except Exception as e:
-        st.error(f"An unknown error occurred: {e}")
-        return "https://placehold.co/200x300/E0E0E0/333333?text=Error"
+    # Final fallback if all attempts fail
+    return "https://via.placeholder.com/500x750?text=No+Image"
 
 
-# Load the data
+# Recommendation function
+def recommend(movie):
+    index = movies[movies['title'] == movie].index[0]
+    distances = sorted(list(enumerate(similarity[index])), reverse=True, key=lambda x: x[1])
+
+    recommended_names = []
+    recommended_posters = []
+    added_titles = set()
+
+    i = 1  # skip the selected movie itself
+    while len(recommended_names) < 5 and i < len(distances):
+        idx = distances[i][0]
+        title = movies.iloc[idx]['title']
+        movie_id = movies.iloc[idx]['movie_id']
+
+        if title not in added_titles:
+            poster_url = fetch_poster(movie_id)
+            recommended_names.append(title)
+            recommended_posters.append(poster_url)
+            added_titles.add(title)
+        i += 1
+
+    # Fill remaining slots with placeholders if needed
+    while len(recommended_names) < 5:
+        recommended_names.append("No Recommendation")
+        recommended_posters.append("https://via.placeholder.com/500x750?text=No+Image")
+
+    return recommended_names, recommended_posters
+
+
+# Streamlit UI Setup
+st.set_page_config(page_title="🎬 Movie Recommender", layout="wide")
+st.title("🎬 Movie Recommender System")
+st.markdown("Select a movie you like and get recommendations!")
+
+# Load data
 try:
-    # Assuming 'movie_data.csv' is in the 'model' subfolder
-    movies = pd.read_csv('model/movie_data.csv')
-    # Assuming 'similarity.pkl' is in the 'model' subfolder
-    with open('model/similarity.pkl', 'rb') as f:
-        similarity = pickle.load(f)
-except FileNotFoundError:
-    st.error("Error: 'movie_data.csv' or 'similarity.pkl' not found in the 'model/' directory. Please ensure these files are correctly placed.")
+    movies = pickle.load(open(MOVIE_LIST_PATH, 'rb'))
+    similarity = pickle.load(open(SIMILARITY_PATH, 'rb'))
+
+    if not isinstance(movies, pd.DataFrame):
+        st.error("Invalid format for movie list. Expected a pandas DataFrame.")
+        st.stop()
+
+    if 'title' not in movies.columns or 'movie_id' not in movies.columns:
+        st.error("Movie data must include 'title' and 'movie_id' columns.")
+        st.stop()
+
+except FileNotFoundError as e:
+    st.error(f"Required file not found: {e}")
     st.stop()
 except Exception as e:
-    st.error(f"Error loading data: {e}")
+    st.error(f"Error loading model files: {e}")
     st.stop()
 
+# Dropdown for selecting a movie
+selected_movie = st.selectbox("Choose a movie you like:", movies['title'].values)
 
-# Function to recommend movies
-def recommend(movie):
-    movie_lower = movie.lower()
-    if movie_lower not in movies['title'].str.lower().values:
-        return [], f"❌ Movie '{movie}' not found in the dataset."
+# Show recommendations
+if st.button("Show Recommendations"):
+    with st.spinner("Fetching recommendations..."):
+        names, posters = recommend(selected_movie)
 
-    # Find the index of the selected movie (case-insensitive search)
-    index = movies[movies['title'].str.lower() == movie_lower].index[0]
-    distances = list(enumerate(similarity[index]))
-    sorted_movies = sorted(distances, key=lambda x: x[1], reverse=True)[1:6] # Get top 5 recommendations
-
-    recommended_movie_names = []
-    recommended_movie_posters = []
-    for i in sorted_movies:
-        movie_id = movies.iloc[i[0]].movie_id
-        recommended_movie_names.append(movies.iloc[i[0]].title)
-        recommended_movie_posters.append(fetch_poster(movie_id)) # Call fetch_poster here
-    return recommended_movie_names, recommended_movie_posters
-
-st.set_page_config(layout="wide")
-
-st.title('Movie Recommender System')
-
-selected_movie_name = st.selectbox(
-    'Type or select a movie from the dropdown',
-    movies['title'].values
-)
-
-if st.button('Show Recommendation'):
-    if selected_movie_name:
-        names, posters = recommend(selected_movie_name)
-        if names and not isinstance(names, str): # Check if names is a list (not an error message string)
-            st.subheader("Recommended Movies:")
-            col1, col2, col3, col4, col5 = st.columns(5)
-            # Display recommendations in columns
-            with col1:
-                st.text(names[0])
-                st.image(posters[0])
-            with col2:
-                st.text(names[1])
-                st.image(posters[1])
-            with col3:
-                st.text(names[2])
-                st.image(posters[2])
-            with col4:
-                st.text(names[3])
-                st.image(posters[3])
-            with col5:
-                st.text(names[4])
-                st.image(posters[4])
-        else:
-            st.warning(posters) # This will display the "Movie not found" message
-    else:
-        st.warning("Please select a movie to get recommendations.")
+    st.subheader("Recommended Movies:")
+    cols = st.columns(5)
+    for col, name, poster in zip(cols, names, posters):
+        with col:
+            st.text(name)
+            st.image(poster, use_container_width=True)
