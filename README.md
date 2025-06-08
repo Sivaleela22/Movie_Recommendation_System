@@ -41,7 +41,7 @@ Run the app:
 
 streamlit run app.py
 
-Your browser will open the app at http://localhost:8501.
+Your browser will open the app at  http://localhost:8501
 
 🖼️ Important Note on Movie Posters
 
